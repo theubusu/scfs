@@ -1,59 +1,8 @@
-use binrw::{BinRead, BinReaderExt};
-use crate::util::{string_from_bytes, read_exact};
+use binrw::{BinReaderExt, Endian};
+use crate::util::{read_exact, round_align, string_from_bytes};
 use std::io::{Read, Seek, SeekFrom};
 
-static SCFS_MAGIC: u32 = 0x73636673;
-
-#[derive(BinRead, Debug)]
-pub struct ScfsSuperBlock {
-    pub magic: u32,
-    pub label: [u8; 16],
-    pub version: u16,
-    pub data_blksize_shift: u8,
-    pub meta_blksize_shift: u8,
-    pub flags: u32,
-    pub timestamp: u32,
-    pub comp_plugin_id: u32,
-    pub enc_plugin_id: u32,
-    pub scfs_super_size: u32,
-    pub enc_param_size: u32,
-    pub comp_param_size: u32,
-    pub uid_table: [u32; 16],
-    pub gid_table: [u32; 16],
-    pub super_total_size: u32,
-    pub comp_blksize_shift: u8,
-    _pad: [u8; 3],
-}
-impl ScfsSuperBlock {
-    pub fn label_string(&self) -> String {
-        string_from_bytes(&self.label)
-    }
-
-    //blksize
-    pub fn data_blksize(&self) -> usize {
-        1 << self.data_blksize_shift
-    }
-    pub fn meta_blksize(&self) -> usize {
-        1 << self.meta_blksize_shift
-    }
-    pub fn comp_blksize(&self) -> usize {
-        1 << self.comp_blksize_shift
-    }
-    
-    //flags
-    pub fn is_big_endian(&self) -> bool {
-        (self.flags & (1 << 0)) != 0
-    }
-    pub fn is_data_encrypted(&self) -> bool {
-        (self.flags & (1 << 1)) != 0
-    }
-    pub fn is_data_compressed(&self) -> bool {
-        (self.flags & (1 << 2)) != 0
-    }
-    pub fn is_meta_encrypted(&self) -> bool {
-        (self.flags & (1 << 4)) != 0
-    }
-}
+use crate::include::*;
 
 pub struct Scfs {
     pub superblock: ScfsSuperBlock,
@@ -61,19 +10,19 @@ pub struct Scfs {
     pub comp_param: Vec<u8>,
 }
 impl Scfs {
-    pub fn open<T: Read + Seek>(reader: &mut T) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn open<T: Read + Seek>(reader: &mut T, endian: Endian) -> Result<Self, Box<dyn std::error::Error>> {
 
         //read superblock
-        let superblock: ScfsSuperBlock = reader.read_be()?;
+        let superblock: ScfsSuperBlock = reader.read_type(endian)?;
 
         //check magic value
         if superblock.magic != SCFS_MAGIC {
             return Err("invalid SCFS magic value".into());
         }
-        if superblock.version != 0x0103 {
+        if superblock.version != SCFS_VERSION{
             return Err("unsupported SCFS version".into());
         }
-        if superblock.scfs_super_size != 0xBC {
+        if superblock.scfs_super_size != SCFS_SUPER_SIZE {
             return Err("invalid SCFS superblock size".into());
         }
 
@@ -84,10 +33,86 @@ impl Scfs {
         //seek to data start
         reader.seek(SeekFrom::Start(superblock.super_total_size.into()))?;
 
+        //  start reading the metadata (inodes)
+        if superblock.is_meta_encrypted() {
+            return Err("metadata is encrypted".into());
+        }
+
+        //read the root inode
+        let root_ino: CommonInode = reader.read_type(endian)?;
+
+        if root_ino.inode_type() != InodeType::Directory {
+            return Err("root inode is not a directory".into());
+        }
+
         Ok(Scfs {
             superblock,
             enc_param,
             comp_param
         })
     }
+
+    fn read_inode<T: Read + Seek>(reader: &mut T, endian: Endian, offset: u32, size: u32) -> Result<MInode, Box<dyn std::error::Error>> {
+        let ini_pos = reader.stream_position()?;
+        let mut read = 0;
+
+        reader.seek(SeekFrom::Start(offset.into()));
+
+        //read common inode header
+        let common: CommonInode = reader.read_type(endian)?;
+        read += 16;
+
+        let inode: Inode = match common.inode_type() {
+            InodeType::RegularFile => {
+                let i_inode: RegularFileInode = reader.read_type(endian)?;
+                read += 20;
+                Inode::RegularFile(i_inode)
+            },
+            InodeType::Directory => {
+                let i_inode: DirectoryInode = reader.read_type(endian)?;
+                read += 16;
+                Inode::Directory(i_inode)
+            },
+            InodeType::Symlink => {
+                let i_inode: SymlinkInode = reader.read_type(endian)?;
+                read += 4;
+                Inode::Symlink(i_inode)
+            },
+            InodeType::CharDevice => {
+                let i_inode: DeviceInode = reader.read_type(endian)?;
+                read += 4;
+                Inode::CharDevice(i_inode)
+            },
+            InodeType::BlockDevice => {
+                let i_inode: DeviceInode = reader.read_type(endian)?;
+                read += 4;
+                Inode::BlockDevice(i_inode)
+            },
+            InodeType::FIFO => {
+                let i_inode: SpecialInode = reader.read_type(endian)?;
+                Inode::Fifo(i_inode)
+            },
+            InodeType::Socket => {
+                let i_inode: SpecialInode = reader.read_type(endian)?;
+                Inode::Fifo(i_inode)
+            },
+        };
+
+        //read name
+        let pad_name_size = round_align(common.name_len as u64 +1 , 4);
+        let name_bytes = read_exact(reader, pad_name_size as usize)?;
+        read += pad_name_size;
+
+        let name = string_from_bytes(&name_bytes);
+
+        Ok( MInode {
+            common,
+            inode,
+            name,
+            total_size: read as usize,
+            children: vec![]
+        })
+
+    }
+
 }

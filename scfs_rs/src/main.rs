@@ -1,6 +1,8 @@
 mod scfs;
+mod include;
 mod util;
 
+use binrw::Endian;
 use clap::Parser;
 use chrono::DateTime;
 use std::fs::{File};
@@ -9,6 +11,9 @@ use scfs::Scfs;
 
 #[derive(Parser, Debug)]
 struct Args {
+    #[arg(short = 'l')]
+    little_endian: bool,
+
     input_file: String,
 }
 
@@ -19,8 +24,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Input file: {}", in_file);
     let mut file = File::open(in_file)?;
 
+    let endianness = match args.little_endian { //assume BE by default, since its the most common used in SCFS
+        true => Endian::Little,
+        false => Endian::Big
+    };
+
     //open fs
-    let scfs = Scfs::open(&mut file)?;
+    let scfs = Scfs::open(&mut file, endianness)?;
 
     println!("SCFS open OK!");
     println!("superblock info -\nLabel: {}\nCreation time: {}\nCompression plugin ID: {:x}\nEncryption plugin ID: {:x}\nData blocksize: {}\nMeta blocksize: {}\nComp blocksize: {}\nTotal superblock size: {}", 
