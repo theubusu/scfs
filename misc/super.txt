@@ -1,0 +1,22 @@
+u32		magic						# 0x73636673
+u8[16]	label						# hardcoded "scfs"
+u16		version
+u8		data_blksize_shift 			# data_blksize = 1 << data_blksize_shift
+u8		meta_blksize_shift 			# meta_blksize = 1 << meta_blksize_shift
+u32		flags						# bitmap - 0=endian(0=little, 1=big), 1=data_enc, 2=data_comp, 4=meta_enc
+u32		timestamp
+u32		comp_plugin_id
+u32		enc_plugin_id
+u32		scfs_super_size				# 0xBC SET
+u32		enc_param_size
+u32		comp_param_size
+u32[16]	uid_table
+u32[16]	gid_table
+u32		super_total_size			# data start offset
+u8		comp_data_blksize_shift		# comp_data_blksize = 1 << comp_data_blksize_shift
+u8[3]	pad
+
+TOTAL SIZE: 0xbc
+
+xb		enc_param
+xb		comp_param
